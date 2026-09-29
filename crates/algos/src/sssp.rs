@@ -4,10 +4,9 @@ use atomic_float::AtomicF32;
 use log::info;
 use rayon::prelude::*;
 
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Instant,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::utils::Timer;
 
 const INF: f32 = f32::MAX;
 const NO_BIN: usize = usize::MAX;
@@ -40,7 +39,7 @@ where
     NI: Idx,
     G: Graph<NI> + DirectedNeighborsWithValues<NI, f32> + Sync,
 {
-    let start = Instant::now();
+    let start = Timer::now();
 
     let DeltaSteppingConfig { start_node, delta } = config;
 

@@ -1,4 +1,6 @@
-use crate::{prelude::*, DEFAULT_PARALLELISM};
+use crate::prelude::*;
+
+use crate::utils::{par_scope, Timer};
 
 use atomic_float::AtomicF64;
 use graph_builder::SharedMut;
@@ -6,8 +8,6 @@ use log::info;
 use rayon::prelude::*;
 
 use std::sync::atomic::Ordering;
-use std::thread::available_parallelism;
-use std::time::Instant;
 
 const CHUNK_SIZE: usize = 16384;
 
@@ -86,7 +86,7 @@ where
     let mut iteration = 0;
 
     loop {
-        let start = Instant::now();
+        let start = Timer::now();
         let error = page_rank_iteration(
             graph,
             base_score,
@@ -124,45 +124,43 @@ where
     let next_chunk = Atomic::new(NI::zero());
     let total_error = AtomicF64::new(0_f64);
 
-    std::thread::scope(|s| {
-        let num_threads = available_parallelism().map_or(DEFAULT_PARALLELISM, |p| p.get());
+    // Runs on a `thread::scope` pool, or once on the calling thread on
+    // wasm32 (no threads there); see `crate::utils::par_scope`.
+    let worker = || {
+        let mut error = 0_f64;
 
-        for _ in 0..num_threads {
-            s.spawn(|| {
-                let mut error = 0_f64;
+        loop {
+            let start = NI::fetch_add(&next_chunk, NI::new(CHUNK_SIZE), Ordering::AcqRel);
+            if start >= graph.node_count() {
+                break;
+            }
 
-                loop {
-                    let start = NI::fetch_add(&next_chunk, NI::new(CHUNK_SIZE), Ordering::AcqRel);
-                    if start >= graph.node_count() {
-                        break;
-                    }
+            let end = (start + NI::new(CHUNK_SIZE)).min(graph.node_count());
 
-                    let end = (start + NI::new(CHUNK_SIZE)).min(graph.node_count());
+            for u in start.range(end) {
+                let incoming_total = graph
+                    .in_neighbors(u)
+                    .map(|v| unsafe { out_scores.add(v.index()).read() })
+                    .sum::<f32>();
 
-                    for u in start.range(end) {
-                        let incoming_total = graph
-                            .in_neighbors(u)
-                            .map(|v| unsafe { out_scores.add(v.index()).read() })
-                            .sum::<f32>();
+                let old_score = unsafe { scores.add(u.index()).read() };
+                let new_score = base_score + damping_factor * incoming_total;
 
-                        let old_score = unsafe { scores.add(u.index()).read() };
-                        let new_score = base_score + damping_factor * incoming_total;
+                unsafe { scores.add(u.index()).write(new_score) };
+                let diff = (new_score - old_score) as f64;
+                error += f64::abs(diff);
 
-                        unsafe { scores.add(u.index()).write(new_score) };
-                        let diff = (new_score - old_score) as f64;
-                        error += f64::abs(diff);
-
-                        unsafe {
-                            out_scores
-                                .add(u.index())
-                                .write(new_score / graph.out_degree(u).index() as f32)
-                        }
-                    }
+                unsafe {
+                    out_scores
+                        .add(u.index())
+                        .write(new_score / graph.out_degree(u).index() as f32)
                 }
-                total_error.fetch_add(error, Ordering::SeqCst);
-            });
+            }
         }
-    });
+        total_error.fetch_add(error, Ordering::SeqCst);
+    };
+
+    par_scope(&worker);
 
     total_error.load(Ordering::SeqCst)
 }

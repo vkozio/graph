@@ -11,7 +11,8 @@ use crate::{
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Instant;
+
+use crate::compat::Timer;
 
 /// Partition the node set based on the degrees of the nodes.
 pub trait DegreePartitionOp<NI: Idx, EV> {
@@ -518,15 +519,15 @@ where
         + Sync,
     EV: Copy + Ord + Sync,
 {
-    let start = Instant::now();
+    let start = Timer::now();
     let degree_node_pairs = sort_by_degree_desc(graph);
     info!("Relabel: sorted degree-node-pairs in {:?}", start.elapsed());
 
-    let start = Instant::now();
+    let start = Timer::now();
     let (degrees, nodes) = unzip_degrees_and_nodes(degree_node_pairs);
     info!("Relabel: built degrees and id map in {:?}", start.elapsed());
 
-    let start = Instant::now();
+    let start = Timer::now();
     let offsets = prefix_sum(degrees);
     let targets = relabel_targets(graph, nodes, &offsets);
     info!("Relabel: built and sorted targets in {:?}", start.elapsed());

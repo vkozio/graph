@@ -1,4 +1,38 @@
 use std::mem::MaybeUninit;
+use std::time::Duration;
+
+/// Wasm-safe timing probe for log-only measurements.
+///
+/// `std::time::Instant::now()` panics at runtime on `wasm32-unknown-unknown`,
+/// but every use in this crate only feeds `log::info!` timings (a no-op
+/// without an initialized logger). On wasm32 this therefore measures nothing
+/// and reports zero, keeping one code path for all targets with no extra
+/// dependency (no `web-time`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Timer {
+    #[cfg(not(target_arch = "wasm32"))]
+    start: std::time::Instant,
+}
+
+impl Timer {
+    pub(crate) fn now() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            start: std::time::Instant::now(),
+        }
+    }
+
+    pub(crate) fn elapsed(&self) -> Duration {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.start.elapsed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Duration::ZERO
+        }
+    }
+}
 
 pub(crate) trait MaybeUninitWriteSliceExt<T> {
     fn write_slice_compat<'a>(this: &'a mut [MaybeUninit<T>], src: &[T]) -> &'a mut [T]

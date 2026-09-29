@@ -9,7 +9,6 @@ use std::{
     mem::{ManuallyDrop, MaybeUninit},
     path::PathBuf,
     sync::atomic::Ordering::Acquire,
-    time::Instant,
 };
 
 use rayon::prelude::*;
@@ -63,6 +62,18 @@ pub struct Csr<Index: Idx, NI, EV> {
 impl<Index: Idx, NI, EV> Csr<Index, NI, EV> {
     pub(crate) fn new(offsets: Box<[Index]>, targets: Box<[Target<NI, EV>]>) -> Self {
         Self { offsets, targets }
+    }
+
+    /// An empty CSR: zero nodes, zero edges.
+    ///
+    /// This is the only way to build a [`Csr`] outside the crate (`new` is
+    /// crate-private); it lets downstream crates represent an empty graph
+    /// directly instead of smuggling in a phantom vertex.
+    pub fn empty() -> Self {
+        Self {
+            offsets: vec![Index::zero()].into_boxed_slice(),
+            targets: Vec::new().into_boxed_slice(),
+        }
     }
 
     #[inline]
@@ -130,15 +141,15 @@ where
     fn from(
         (edge_list, node_count, direction, csr_layout): (&'_ E, NI, Direction, CsrLayout),
     ) -> Self {
-        let start = Instant::now();
+        let start = Timer::now();
         let degrees = edge_list.degrees(node_count, direction);
         info!("Computed degrees in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let offsets = prefix_sum_atomic(degrees);
         info!("Computed prefix sum in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let edge_count = offsets[node_count.index()].load(Acquire).index();
         let mut targets = Vec::<Target<NI, EV>>::with_capacity(edge_count);
         let targets_ptr = SharedMut::new(targets.as_mut_ptr());
@@ -179,7 +190,7 @@ where
         }
         info!("Computed target array in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let mut offsets = ManuallyDrop::new(offsets);
         let (ptr, len, cap) = (offsets.as_mut_ptr(), offsets.len(), offsets.capacity());
 
@@ -200,13 +211,13 @@ where
         let (offsets, targets) = match csr_layout {
             CsrLayout::Unsorted => (offsets, targets),
             CsrLayout::Sorted => {
-                let start = Instant::now();
+                let start = Timer::now();
                 sort_targets(&offsets, &mut targets);
                 info!("Sorted targets in {:?}", start.elapsed());
                 (offsets, targets)
             }
             CsrLayout::Deduplicated => {
-                let start = Instant::now();
+                let start = Timer::now();
                 let offsets_targets = sort_and_deduplicate_targets(&offsets, &mut targets[..]);
                 info!("Sorted and deduplicated targets in {:?}", start.elapsed());
                 offsets_targets
@@ -386,6 +397,11 @@ impl<NI: Idx, NV, EV> DirectedCsrGraph<NI, NV, EV> {
 
         g
     }
+
+    /// An empty directed graph: zero nodes, zero edges.
+    pub fn empty() -> Self {
+        Self::new(NodeValues::new(Vec::new()), Csr::empty(), Csr::empty())
+    }
 }
 
 impl<NI, NV, EV> ToUndirectedOp for DirectedCsrGraph<NI, NV, EV>
@@ -531,11 +547,11 @@ where
 
         let node_values = NodeValues::new(vec![(); node_count.index()]);
 
-        let start = Instant::now();
+        let start = Timer::now();
         let csr_out = Csr::from((&edge_list, node_count, Direction::Outgoing, csr_option));
         info!("Created outgoing csr in {:?}.", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let csr_inc = Csr::from((&edge_list, node_count, Direction::Incoming, csr_option));
         info!("Created incoming csr in {:?}.", start.elapsed());
 
@@ -561,11 +577,11 @@ where
             node_count_from_edge_list.index()
         );
 
-        let start = Instant::now();
+        let start = Timer::now();
         let csr_out = Csr::from((&edge_list, node_count, Direction::Outgoing, csr_option));
         info!("Created outgoing csr in {:?}.", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let csr_inc = Csr::from((&edge_list, node_count, Direction::Incoming, csr_option));
         info!("Created incoming csr in {:?}.", start.elapsed());
 
@@ -677,6 +693,11 @@ impl<NI: Idx, NV, EV> UndirectedCsrGraph<NI, NV, EV> {
 
         g
     }
+
+    /// An empty undirected graph: zero nodes, zero edges.
+    pub fn empty() -> Self {
+        Self::new(NodeValues::new(Vec::new()), Csr::empty())
+    }
 }
 
 impl<NI: Idx, NV, EV> Graph<NI> for UndirectedCsrGraph<NI, NV, EV> {
@@ -743,7 +764,7 @@ where
 
         let node_values = NodeValues::new(vec![(); node_count.index()]);
 
-        let start = Instant::now();
+        let start = Timer::now();
         let csr = Csr::from((&edge_list, node_count, Direction::Undirected, csr_option));
         info!("Created csr in {:?}.", start.elapsed());
 
@@ -769,7 +790,7 @@ where
             node_count_from_edge_list.index()
         );
 
-        let start = Instant::now();
+        let start = Timer::now();
         let csr = Csr::from((&edge_list, node_count, Direction::Undirected, csr_option));
         info!("Created csr in {:?}.", start.elapsed());
 
@@ -1252,5 +1273,20 @@ mod tests {
         assert_eq!(g0.degree(1), 2);
         assert_eq!(g0.degree(2), 1);
         assert_eq!(g0.degree(3), 0);
+    }
+
+    #[test]
+    fn empty_graphs_have_zero_nodes_and_edges() {
+        let directed = DirectedCsrGraph::<u32>::empty();
+        assert_eq!(directed.node_count(), 0);
+        assert_eq!(directed.edge_count(), 0);
+
+        let undirected = UndirectedCsrGraph::<u32>::empty();
+        assert_eq!(undirected.node_count(), 0);
+        assert_eq!(undirected.edge_count(), 0);
+
+        let csr = Csr::<u32, u32, ()>::empty();
+        assert_eq!(csr.node_count(), 0);
+        assert_eq!(csr.edge_count(), 0);
     }
 }

@@ -1,11 +1,12 @@
-use crate::{prelude::*, DEFAULT_PARALLELISM};
+use crate::prelude::*;
 
 use log::info;
 use num_format::{Locale, ToFormattedString};
 
 use std::sync::atomic::AtomicU64;
-use std::thread::available_parallelism;
-use std::{sync::atomic::Ordering, time::Instant};
+use std::sync::atomic::Ordering;
+
+use crate::utils::{par_scope, Timer};
 
 const CHUNK_SIZE: usize = 64;
 
@@ -14,7 +15,7 @@ where
     NI: Idx,
     G: RelabelByDegreeOp<NI, EV>,
 {
-    let start = Instant::now();
+    let start = Timer::now();
     graph.make_degree_ordered();
     info!("Relabeled graph in {:?}", start.elapsed());
 }
@@ -24,55 +25,53 @@ where
     NI: Idx,
     G: Graph<NI> + UndirectedNeighbors<NI> + Sync,
 {
-    let start = Instant::now();
+    let start = Timer::now();
 
     let next_chunk = Atomic::new(NI::zero());
     let total_triangles = AtomicU64::new(0);
 
-    std::thread::scope(|s| {
-        let num_threads = available_parallelism().map_or(DEFAULT_PARALLELISM, |p| p.get());
+    // Runs on a `thread::scope` pool, or once on the calling thread on
+    // wasm32 (no threads there); see `crate::utils::par_scope`.
+    let worker = || {
+        let mut triangles = 0;
 
-        for _ in 0..num_threads {
-            s.spawn(|| {
-                let mut triangles = 0;
+        loop {
+            let start = NI::fetch_add(&next_chunk, NI::new(CHUNK_SIZE), Ordering::AcqRel);
+            if start >= graph.node_count() {
+                break;
+            }
 
-                loop {
-                    let start = NI::fetch_add(&next_chunk, NI::new(CHUNK_SIZE), Ordering::AcqRel);
-                    if start >= graph.node_count() {
+            let end = (start + NI::new(CHUNK_SIZE)).min(graph.node_count());
+
+            for u in start.range(end) {
+                for &v in graph.neighbors(u) {
+                    if v > u {
                         break;
                     }
 
-                    let end = (start + NI::new(CHUNK_SIZE)).min(graph.node_count());
+                    let mut it = put_back_iterator(graph.neighbors(u));
 
-                    for u in start.range(end) {
-                        for &v in graph.neighbors(u) {
-                            if v > u {
+                    for &w in graph.neighbors(v) {
+                        if w > v {
+                            break;
+                        }
+                        while let Some(x) = it.next() {
+                            if x >= &w {
+                                if x == &w {
+                                    triangles += 1;
+                                }
+                                it.put_back(x);
                                 break;
-                            }
-
-                            let mut it = put_back_iterator(graph.neighbors(u));
-
-                            for &w in graph.neighbors(v) {
-                                if w > v {
-                                    break;
-                                }
-                                while let Some(x) = it.next() {
-                                    if x >= &w {
-                                        if x == &w {
-                                            triangles += 1;
-                                        }
-                                        it.put_back(x);
-                                        break;
-                                    }
-                                }
                             }
                         }
                     }
                 }
-                total_triangles.fetch_add(triangles, Ordering::AcqRel);
-            });
+            }
         }
-    });
+        total_triangles.fetch_add(triangles, Ordering::AcqRel);
+    };
+
+    par_scope(&worker);
 
     let tc = total_triangles.load(Ordering::SeqCst);
 

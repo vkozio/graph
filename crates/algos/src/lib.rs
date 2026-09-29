@@ -149,6 +149,7 @@ pub mod triangle_count;
 pub mod utils;
 pub mod wcc;
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 const DEFAULT_PARALLELISM: usize = 4;
 
 // Related to https://github.com/rust-lang/rust/issues/72686

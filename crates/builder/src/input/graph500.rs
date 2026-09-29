@@ -1,6 +1,7 @@
 use log::info;
 use std::{fs::File, marker::PhantomData, path::Path};
 
+use crate::compat::Timer;
 use crate::prelude::*;
 use rayon::prelude::*;
 
@@ -67,7 +68,7 @@ where
     type Error = Error;
 
     fn try_from(map: &[u8]) -> Result<Self, Self::Error> {
-        let start = std::time::Instant::now();
+        let start = Timer::now();
 
         let file_size = map.len();
         let edge_count = map.len() / std::mem::size_of::<PackedEdge>();

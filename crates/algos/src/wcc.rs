@@ -29,7 +29,9 @@
 
 use ahash::AHashMap;
 use log::info;
-use std::{hash::Hash, time::Instant};
+use std::hash::Hash;
+
+use crate::utils::Timer;
 
 use crate::prelude::*;
 use rayon::prelude::*;
@@ -129,7 +131,7 @@ where
     NI: Idx + Hash,
     G: Graph<NI> + DirectedDegrees<NI> + DirectedNeighbors<NI> + Sync,
 {
-    let start = Instant::now();
+    let start = Timer::now();
     let comp = Afforest::new(graph.node_count().index());
     info!("Afforest creation took {:?}", start.elapsed());
 
@@ -146,7 +148,7 @@ where
     NI: Idx + Hash,
     G: Graph<NI> + DirectedDegrees<NI> + DirectedNeighbors<NI> + Sync,
 {
-    let start = Instant::now();
+    let start = Timer::now();
     let dss = DisjointSetStruct::new(graph.node_count().index());
     info!("DSS creation took {:?}", start.elapsed());
 
@@ -161,23 +163,23 @@ where
     G: Graph<NI> + DirectedDegrees<NI> + DirectedNeighbors<NI> + Sync,
     UF: UnionFind<NI> + Send + Sync,
 {
-    let start = Instant::now();
+    let start = Timer::now();
     sample_subgraph(graph, comp, config);
     info!("Link subgraph took {:?}", start.elapsed());
 
-    let start = Instant::now();
+    let start = Timer::now();
     comp.compress();
     info!("Sample compress took {:?}", start.elapsed());
 
-    let start = Instant::now();
+    let start = Timer::now();
     let largest_component = find_largest_component(comp, config);
     info!("Get component took {:?}", start.elapsed());
 
-    let start = Instant::now();
+    let start = Timer::now();
     link_remaining(graph, comp, largest_component, config);
     info!("Link remaining took {:?}", start.elapsed());
 
-    let start = Instant::now();
+    let start = Timer::now();
     comp.compress();
     info!("Final compress took {:?}", start.elapsed());
 }
@@ -215,7 +217,7 @@ where
     for r in 0..neighbor_rounds {
         info!("Neighbor round {} of {neighbor_rounds}", r + 1);
 
-        let start = Instant::now();
+        let start = Timer::now();
         (0..graph.node_count().index())
             .into_par_iter()
             .chunks(config.chunk_size)
@@ -235,7 +237,7 @@ where
             start.elapsed()
         );
 
-        let start = Instant::now();
+        let start = Timer::now();
         af.compress();
         info!("Compress took {:?}", start.elapsed());
     }

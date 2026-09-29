@@ -4,6 +4,8 @@ use std::{convert::TryFrom, fs::File, marker::PhantomData, path::Path, sync::Arc
 
 use crate::index::Idx;
 
+use crate::compat::Timer;
+
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use std::sync::atomic::Ordering::AcqRel;
@@ -186,7 +188,7 @@ where
     type Error = Error;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let start = std::time::Instant::now();
+        let start = Timer::now();
 
         let page_size = page_size::get();
         let cpu_count = num_cpus::get_physical();
@@ -202,52 +204,61 @@ where
 
         let new_line_bytes = new_line_bytes(bytes);
 
+        // One chunk parser shared by both targets: `thread::scope` workers
+        // natively, a plain sequential loop on wasm32 (no threads there).
+        let parse_chunk = |mut start: usize, mut end: usize| {
+            while end <= bytes.len() && bytes[end - 1] != b'\n' {
+                end += 1;
+            }
+
+            if start != 0 {
+                while bytes[start - 1] != b'\n' {
+                    start += 1;
+                }
+            }
+
+            let mut edges = Vec::new();
+            let mut chunk = &bytes[start..end];
+            while !chunk.is_empty() {
+                let (source, source_bytes) = NI::parse(chunk);
+                chunk = &chunk[source_bytes + 1..];
+
+                let (target, target_bytes) = NI::parse(chunk);
+                chunk = &chunk[target_bytes..];
+
+                let value = match chunk.strip_prefix(b" ") {
+                    Some(value_chunk) => {
+                        let (value, value_bytes) = EV::parse(value_chunk);
+                        chunk = &value_chunk[value_bytes + new_line_bytes..];
+                        value
+                    }
+                    None => {
+                        chunk = &chunk[new_line_bytes..];
+                        // if the input does not have a value, the default for EV is used
+                        EV::parse(&[]).0
+                    }
+                };
+
+                edges.push((source, target, value));
+            }
+
+            let mut all_edges = all_edges.lock();
+            all_edges.append(&mut edges);
+        };
+
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::scope(|s| {
             for start in (0..bytes.len()).step_by(chunk_size) {
-                let all_edges = Arc::clone(&all_edges);
-                s.spawn(move || {
-                    let mut end = usize::min(start + chunk_size, bytes.len());
-                    while end <= bytes.len() && bytes[end - 1] != b'\n' {
-                        end += 1;
-                    }
-
-                    let mut start = start;
-                    if start != 0 {
-                        while bytes[start - 1] != b'\n' {
-                            start += 1;
-                        }
-                    }
-
-                    let mut edges = Vec::new();
-                    let mut chunk = &bytes[start..end];
-                    while !chunk.is_empty() {
-                        let (source, source_bytes) = NI::parse(chunk);
-                        chunk = &chunk[source_bytes + 1..];
-
-                        let (target, target_bytes) = NI::parse(chunk);
-                        chunk = &chunk[target_bytes..];
-
-                        let value = match chunk.strip_prefix(b" ") {
-                            Some(value_chunk) => {
-                                let (value, value_bytes) = EV::parse(value_chunk);
-                                chunk = &value_chunk[value_bytes + new_line_bytes..];
-                                value
-                            }
-                            None => {
-                                chunk = &chunk[new_line_bytes..];
-                                // if the input does not have a value, the default for EV is used
-                                EV::parse(&[]).0
-                            }
-                        };
-
-                        edges.push((source, target, value));
-                    }
-
-                    let mut all_edges = all_edges.lock();
-                    all_edges.append(&mut edges);
-                });
+                let end = usize::min(start + chunk_size, bytes.len());
+                s.spawn(move || parse_chunk(start, end));
             }
         });
+
+        #[cfg(target_arch = "wasm32")]
+        for start in (0..bytes.len()).step_by(chunk_size) {
+            let end = usize::min(start + chunk_size, bytes.len());
+            parse_chunk(start, end);
+        }
 
         let edges = Arc::try_unwrap(all_edges).unwrap().into_inner();
 

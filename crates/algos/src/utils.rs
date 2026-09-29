@@ -1,3 +1,60 @@
+use std::time::Duration;
+
+/// Wasm-safe timing probe for log-only measurements.
+///
+/// `std::time::Instant::now()` panics at runtime on `wasm32-unknown-unknown`,
+/// but every use in this crate only feeds `log::info!` timings (a no-op
+/// without an initialized logger). On wasm32 this therefore measures nothing
+/// and reports zero, keeping one code path for all targets with no extra
+/// dependency (no `web-time`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Timer {
+    #[cfg(not(target_arch = "wasm32"))]
+    start: std::time::Instant,
+}
+
+impl Timer {
+    pub(crate) fn now() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            start: std::time::Instant::now(),
+        }
+    }
+
+    pub(crate) fn elapsed(&self) -> Duration {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.start.elapsed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Duration::ZERO
+        }
+    }
+}
+
+/// Runs `f` on a `std::thread::scope` pool.
+///
+/// `wasm32-unknown-unknown` has no threads, so `f` runs once on the calling
+/// thread instead. Call sites hoist their scoped body into a closure, so both
+/// targets share one code path.
+pub(crate) fn par_scope<F>(f: &F)
+where
+    F: Fn() + Sync,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::scope(|s| {
+        let num_threads =
+            std::thread::available_parallelism().map_or(crate::DEFAULT_PARALLELISM, |p| p.get());
+        for _ in 0..num_threads {
+            s.spawn(f);
+        }
+    });
+
+    #[cfg(target_arch = "wasm32")]
+    f();
+}
+
 #[derive(Clone, Debug)]
 /// An iterator adaptor that allows putting back a single
 /// item to the front of the iterator.

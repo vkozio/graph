@@ -7,7 +7,8 @@ use crate::{EdgeMutation, EdgeMutationWithValues};
 
 use log::info;
 use std::sync::{RwLock, RwLockReadGuard};
-use std::time::Instant;
+
+use crate::compat::Timer;
 
 use crate::graph::csr::NodeValues;
 use rayon::prelude::*;
@@ -222,7 +223,7 @@ where
     fn from(
         (edge_list, node_count, direction, csr_layout): (&'_ E, NI, Direction, CsrLayout),
     ) -> Self {
-        let start = Instant::now();
+        let start = Timer::now();
         let thread_safe_vec = edge_list
             .degrees(node_count, direction)
             .into_par_iter()
@@ -230,7 +231,7 @@ where
             .collect::<Vec<_>>();
         info!("Initialized adjacency list in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         edge_list.edges().for_each(|(s, t, v)| {
             if matches!(direction, Direction::Outgoing | Direction::Undirected) {
                 thread_safe_vec[s.index()]
@@ -247,7 +248,7 @@ where
         });
         info!("Grouped edge tuples in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let mut edges = Vec::with_capacity(node_count.index());
         thread_safe_vec
             .into_par_iter()
@@ -414,11 +415,11 @@ where
         let node_count = edge_list.max_node_id() + NI::new(1);
         let node_values = NodeValues::new(vec![(); node_count.index()]);
 
-        let start = Instant::now();
+        let start = Timer::now();
         let al_out = AdjacencyList::from((&edge_list, node_count, Direction::Outgoing, csr_layout));
         info!("Created outgoing adjacency list in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let al_inc = AdjacencyList::from((&edge_list, node_count, Direction::Incoming, csr_layout));
         info!("Created incoming adjacency list in {:?}", start.elapsed());
 
@@ -437,11 +438,11 @@ where
         info!("Creating directed graph");
         let node_count = edge_list.max_node_id() + NI::new(1);
 
-        let start = Instant::now();
+        let start = Timer::now();
         let al_out = AdjacencyList::from((&edge_list, node_count, Direction::Outgoing, csr_layout));
         info!("Created outgoing adjacency list in {:?}", start.elapsed());
 
-        let start = Instant::now();
+        let start = Timer::now();
         let al_inc = AdjacencyList::from((&edge_list, node_count, Direction::Incoming, csr_layout));
         info!("Created incoming adjacency list in {:?}", start.elapsed());
 
@@ -567,7 +568,7 @@ where
         let node_count = edge_list.max_node_id() + NI::new(1);
         let node_values = NodeValues::new(vec![(); node_count.index()]);
 
-        let start = Instant::now();
+        let start = Timer::now();
         let al = AdjacencyList::from((&edge_list, node_count, Direction::Undirected, csr_layout));
         info!("Created adjacency list in {:?}", start.elapsed());
 
@@ -586,7 +587,7 @@ where
         info!("Creating undirected graph");
         let node_count = edge_list.max_node_id() + NI::new(1);
 
-        let start = Instant::now();
+        let start = Timer::now();
         let al = AdjacencyList::from((&edge_list, node_count, Direction::Undirected, csr_layout));
         info!("Created adjacency list in {:?}", start.elapsed());
 
